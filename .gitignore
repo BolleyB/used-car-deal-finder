@@ -1,6 +1,11 @@
+# Models
+models/
+
+
+
 # Large raw datasets
 data/vehicles.csv
-
+data/cleaned_vehicles.csv
 
 
 
