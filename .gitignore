@@ -1,3 +1,10 @@
+# Large raw datasets
+data/vehicles.csv
+
+
+
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -143,7 +150,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-
+.venv/
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -205,3 +212,5 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+data/*.zip
