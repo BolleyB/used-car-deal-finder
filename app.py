@@ -1,35 +1,54 @@
 # app.py
 import streamlit as st
 import pandas as pd
-import joblib
 import numpy as np
+import joblib
 import os
+from sklearn.base import RegressorMixin
 
 # -------------------------
-# Load trained model
+# Config
 # -------------------------
-model_path = os.path.join("models", "random_forest_used_car_model.joblib")
-rf_model = joblib.load(model_path)
-
-st.title("Used Car Price Predictor")
-st.write("Predict the price of a used car using the trained Random Forest model.")
+MODEL_DIR = "models"
+DATA_PATH = os.path.join("data", "cleaned_vehicles_sample.csv")
 
 # -------------------------
-# Load cleaned dataset for dropdown options
+# Safe model loader
 # -------------------------
-data_path = os.path.join("data", "cleaned_vehicles_sample.csv")
-df = pd.read_csv(data_path)
+@st.cache_resource
+def load_models_safe():
+    models = []
+    for file in os.listdir(MODEL_DIR):
+        if file.endswith(".joblib"):
+            path = os.path.join(MODEL_DIR, file)
+            try:
+                obj = joblib.load(path)
+                if isinstance(obj, RegressorMixin):
+                    models.append(obj)
+                elif isinstance(obj, list):
+                    valid_models = [m for m in obj if isinstance(m, RegressorMixin)]
+                    models.extend(valid_models)
+            except Exception as e:
+                st.warning(f"Could not load {file}: {e}")
+    return models
 
-# Normalize columns and categorical values
+models = load_models_safe()
+st.write(f"Loaded {len(models)} valid models.")
+
+# -------------------------
+# Load dataset for dropdowns
+# -------------------------
+df = pd.read_csv(DATA_PATH)
 df.columns = df.columns.str.strip().str.lower()
-for col in ["manufacturer", "model", "condition", "cylinders", "fuel",
-            "transmission", "drive", "type", "state"]:
+
+# Normalize categorical columns
+cat_cols = ["manufacturer", "model", "condition", "cylinders", "fuel",
+            "transmission", "drive", "type", "state"]
+for col in cat_cols:
     if col in df.columns:
         df[col] = df[col].astype(str).str.lower()
 
-# -------------------------
 # Dropdown options
-# -------------------------
 manufacturers = sorted(df["manufacturer"].unique())
 conditions = sorted(df["condition"].unique())
 cylinders_options = sorted(df["cylinders"].unique())
@@ -38,17 +57,14 @@ transmissions = sorted(df["transmission"].unique())
 drive_options = sorted(df["drive"].unique())
 types = sorted(df["type"].unique())
 states = sorted(df["state"].unique())
-
 min_age, max_age = int(df["car_age"].min()), int(df["car_age"].max())
 car_age_options = list(range(min_age, max_age + 1))
 
 # -------------------------
-# Manufacturer & Model selection (dynamic)
+# Dynamic manufacturer -> model
 # -------------------------
 manufacturer = st.selectbox("Manufacturer", [m.title() for m in manufacturers])
 manufacturer_lower = manufacturer.lower()
-
-# Models update based on selected manufacturer
 models_for_manufacturer = sorted(df[df["manufacturer"] == manufacturer_lower]["model"].unique())
 model_name = st.selectbox("Model", [m.title() for m in models_for_manufacturer])
 model_lower = model_name.lower()
@@ -72,26 +88,69 @@ with st.form("car_form"):
     submitted = st.form_submit_button("Predict Price")
 
 # -------------------------
+# Prediction function
+# -------------------------
+def prepare_features(input_df, full_df):
+    """
+    Prepares features for prediction: log_odometer, car_age, model frequency.
+    """
+    df_copy = input_df.copy()
+
+    # Log-transform odometer
+    df_copy["log_odometer"] = np.log1p(df_copy["log_odometer"] if "log_odometer" in df_copy.columns else df_copy["odometer"])
+
+    # Car age (already provided, but ensure column exists)
+    if "car_age" not in df_copy.columns:
+        df_copy["car_age"] = df_copy["car_age"]
+
+    # High-cardinality feature: model frequency
+    model_counts = full_df["model"].value_counts()
+    df_copy["model_freq"] = df_copy["model"].map(model_counts).fillna(0)
+
+    return df_copy
+
+def predict_batch(models, df):
+    """
+    Predict with multiple models and average results.
+    Assumes models were trained on log-target.
+    """
+    preds = []
+    for m in models:
+        try:
+            pred = m.predict(df)
+            preds.append(pred)
+        except Exception as e:
+            st.warning(f"Prediction failed for one model: {e}")
+    if len(preds) == 0:
+        return None
+    avg_pred_log = np.mean(preds, axis=0)
+    return np.expm1(avg_pred_log)  # reverse log transform
+
+# -------------------------
 # Make Prediction
 # -------------------------
 if submitted:
-    new_car = pd.DataFrame([{
-        "manufacturer": manufacturer_lower,
-        "model": model_lower,
-        "condition": condition,
-        "cylinders": cylinders,
-        "fuel": fuel,
-        "transmission": transmission,
-        "drive": drive,
-        "type": car_type,
-        "state": state,
-        "car_age": car_age,
-        "log_odometer": np.log1p(odometer)
-    }])
+    if len(models) == 0:
+        st.error("No valid models loaded!")
+    else:
+        new_car = pd.DataFrame([{
+            "manufacturer": manufacturer_lower,
+            "model": model_lower,
+            "condition": condition,
+            "cylinders": cylinders,
+            "fuel": fuel,
+            "transmission": transmission,
+            "drive": drive,
+            "type": car_type,
+            "state": state,
+            "car_age": car_age,
+            "odometer": odometer
+        }])
 
-    try:
-        predicted_price = rf_model.predict(new_car)[0]
-        st.success(f"Predicted Price: ${predicted_price:,.2f}")
-    except Exception as e:
-        st.error(f"Error predicting price: {e}")
-        st.write("Make sure all required features are included and correctly typed.")
+        new_car_prepared = prepare_features(new_car, df)
+
+        preds = predict_batch(models, new_car_prepared)
+        if preds is not None:
+            st.success(f"Predicted Price: ${preds[0]:,.2f}")
+        else:
+            st.error("No predictions could be made. Check model features and input.")
